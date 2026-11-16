@@ -47,10 +47,14 @@ class ItagService : Service() {
         var onStatus: ((Boolean) -> Unit)? = null
 
         fun mulai(c: Context) {
-            if (Build.VERSION.SDK_INT >= 26) {
-                c.startForegroundService(Intent(c, ItagService::class.java))
-            } else {
-                c.startService(Intent(c, ItagService::class.java))
+            try {
+                if (Build.VERSION.SDK_INT >= 26) {
+                    c.startForegroundService(Intent(c, ItagService::class.java))
+                } else {
+                    c.startService(Intent(c, ItagService::class.java))
+                }
+            } catch (e: Exception) {
+                // Izin atau kebijakan sistem menolak layanan; aplikasi tetap berjalan
             }
         }
 
@@ -112,11 +116,16 @@ class ItagService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notif = bangunNotif(false)
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(ID_NOTIF, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
-            startForeground(ID_NOTIF, notif)
+        try {
+            val notif = bangunNotif(false)
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(ID_NOTIF, notif, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            } else {
+                startForeground(ID_NOTIF, notif)
+            }
+        } catch (e: Exception) {
+            stopSelf()
+            return START_NOT_STICKY
         }
         if (Pengaturan.itagMac(this) == null) {
             stopSelf()
@@ -140,7 +149,12 @@ class ItagService : Service() {
             return
         }
         gatt?.close()
-        gatt = dev.connectGatt(this, true, callbackGatt, BluetoothDevice.TRANSPORT_LE)
+        try {
+            gatt = dev.connectGatt(this, true, callbackGatt, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: SecurityException) {
+            // Izin Bluetooth belum diberikan; sambungan dicoba lagi nanti
+            handler.postDelayed(cobaLagi, 5000L)
+        }
     }
 
     private fun setStatus(v: Boolean) {

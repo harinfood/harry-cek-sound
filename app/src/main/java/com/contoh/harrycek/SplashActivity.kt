@@ -41,7 +41,7 @@ class SplashActivity : Activity() {
         radial.setShape(GradientDrawable.OVAL)
         radial.setGradientType(GradientDrawable.RADIAL_GRADIENT)
         radial.setGradientRadius(dpF(220f))
-        radial.setColors(intArrayOf(Color.parseColor("#6600B0FF"), Color.parseColor("#000B0FF")))
+        radial.setColors(intArrayOf(Color.parseColor("#6600B0FF"), Color.parseColor("#0000B0FF")))
         cahaya.background = radial
 
         val kolom = LinearLayout(this)
