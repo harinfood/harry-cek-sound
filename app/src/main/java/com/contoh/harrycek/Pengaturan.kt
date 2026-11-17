@@ -40,6 +40,27 @@ object Pengaturan {
 
     fun rekamanTerakhir(c: Context): String? = p(c).getString("rekaman_terakhir", null)
 
+    fun musikUri(c: Context): String? = p(c).getString("musik_uri", null)
+
+    fun musikNama(c: Context): String = p(c).getString("musik_nama", "") ?: ""
+
+    fun simpanMusik(c: Context, uri: String, nama: String) {
+        p(c).edit().putString("musik_uri", uri).putString("musik_nama", nama).apply()
+    }
+
+    fun musikAktif(c: Context): Boolean = p(c).getBoolean("musik_aktif", false)
+
+    fun simpanMusikAktif(c: Context, v: Boolean) {
+        p(c).edit().putBoolean("musik_aktif", v).apply()
+    }
+
+    /** Volume musik latar 0-100 (suara vokal selalu 100%). Default 30. */
+    fun musikVol(c: Context): Int = p(c).getInt("musik_vol", 30)
+
+    fun simpanMusikVol(c: Context, v: Int) {
+        p(c).edit().putInt("musik_vol", v.coerceIn(0, 100)).apply()
+    }
+
     fun simpanRekamanTerakhir(c: Context, path: String?) {
         val e = p(c).edit()
         if (path == null) e.remove("rekaman_terakhir") else e.putString("rekaman_terakhir", path)

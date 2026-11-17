@@ -8,6 +8,7 @@ import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -37,11 +38,11 @@ class Mikrofon(private val ctx: Context) {
 
     fun sedangJalan(): Boolean = jalan
 
-    fun mulai(monitor: Boolean, rekam: Boolean, berkas: File?) {
+    fun mulai(monitor: Boolean, rekam: Boolean, berkas: File?, musikUri: Uri? = null, volMusik: Float = 0.3f) {
         if (jalan) return
         jalan = true
         val bt = Pengaturan.micBluetooth(ctx)
-        worker = Thread { jalankan(monitor, rekam, berkas, bt) }.apply {
+        worker = Thread { jalankan(monitor, rekam, berkas, bt, musikUri, volMusik) }.apply {
             name = "mikrofon"
             start()
         }
@@ -51,7 +52,7 @@ class Mikrofon(private val ctx: Context) {
         jalan = false
     }
 
-    private fun jalankan(monitor: Boolean, rekam: Boolean, berkas: File?, bt: Boolean) {
+    private fun jalankan(monitor: Boolean, rekam: Boolean, berkas: File?, bt: Boolean, musikUri: Uri?, volMusik: Float) {
         val rate = if (bt) 16000 else 44100
         var rec: AudioRecord? = null
         var track: AudioTrack? = null
@@ -61,6 +62,15 @@ class Mikrofon(private val ctx: Context) {
             if (bt) {
                 aktifkanBluetooth()
                 Thread.sleep(1200L) // beri waktu sambungan SCO siap
+            }
+            // Musik latar dibaca dulu, disesuaikan dengan sample rate mic
+            var musik: ShortArray? = null
+            if (musikUri != null) {
+                try {
+                    musik = MusikLatar.decode(ctx, musikUri, rate)
+                } catch (e: Exception) {
+                    handler.post { onError?.invoke("Musik latar gagal dibaca, lanjut tanpa musik") }
+                }
             }
             val minBuf = AudioRecord.getMinBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
             if (minBuf <= 0) throw IllegalStateException("Format audio tidak didukung")
@@ -109,15 +119,28 @@ class Mikrofon(private val ctx: Context) {
                 hasil = berkas
             }
 
+            var posMusik = 0
+            val mix = ShortArray(buf.size)
             r.startRecording()
             while (jalan) {
                 val n = r.read(buf, 0, buf.size)
                 if (n <= 0) continue
-                track?.write(buf, 0, n)
+                // Vokal tetap 100%, musik latar diturunkan volumenya agar vokal jelas
+                var out: ShortArray = buf
+                val mus = musik
+                if (mus != null && mus.isNotEmpty()) {
+                    for (i in 0 until n) {
+                        val v = buf[i] + mus[posMusik] * volMusik
+                        mix[i] = v.toInt().coerceIn(-32768, 32767).toShort()
+                        posMusik = (posMusik + 1) % mus.size
+                    }
+                    out = mix
+                }
+                track?.write(out, 0, n)
                 val fs = raf
                 if (fs != null) {
                     val bb = ByteBuffer.allocate(n * 2).order(ByteOrder.LITTLE_ENDIAN)
-                    for (i in 0 until n) bb.putShort(buf[i])
+                    for (i in 0 until n) bb.putShort(out[i])
                     fs.write(bb.array())
                 }
                 val cb = onLevel

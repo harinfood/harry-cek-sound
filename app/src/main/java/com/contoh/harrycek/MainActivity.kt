@@ -19,6 +19,9 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.SeekBar
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
@@ -44,6 +47,10 @@ class MainActivity : Activity() {
     private lateinit var txtItag: TextView
     private lateinit var btnItag: TextView
     private lateinit var listRekaman: LinearLayout
+    private lateinit var txtMusik: TextView
+    private lateinit var swMusik: Switch
+    private lateinit var seekMusik: SeekBar
+    private lateinit var txtVolMusik: TextView
 
     private var sedangRekam = false
     private var mulaiRekamMs = 0L
@@ -78,6 +85,7 @@ class MainActivity : Activity() {
         segarkanRekaman()
         segarkanSuara()
         segarkanMicChip()
+        segarkanMusik()
         segarkanTombol()
         handler.removeCallbacks(penyegar)
         handler.post(penyegar)
@@ -134,7 +142,7 @@ class MainActivity : Activity() {
             return
         }
         sedangRekam = false
-        mikro.mulai(true, false, null)
+        mikro.mulai(true, false, null, musikUriAktif(), volMusikAktif())
         segarkanTombol()
     }
 
@@ -150,7 +158,7 @@ class MainActivity : Activity() {
         sedangRekam = true
         mulaiRekamMs = System.currentTimeMillis()
         txtTimer.text = "00:00"
-        mikro.mulai(swDengarRekam.isChecked, true, Rekaman.baru(this))
+        mikro.mulai(swDengarRekam.isChecked, true, Rekaman.baru(this), musikUriAktif(), volMusikAktif())
         segarkanTombol()
     }
 
@@ -288,6 +296,67 @@ class MainActivity : Activity() {
         segarkanRekaman()
     }
 
+    // ---------- musik latar ----------
+
+    private fun musikUriAktif(): Uri? {
+        if (!Pengaturan.musikAktif(this)) return null
+        return Pengaturan.musikUri(this)?.let { Uri.parse(it) }
+    }
+
+    private fun volMusikAktif(): Float = Pengaturan.musikVol(this) / 100f
+
+    private fun segarkanMusik() {
+        val nama = Pengaturan.musikNama(this)
+        txtMusik.text = if (nama.isEmpty()) "Belum ada MP3 dipilih" else "🎶 $nama"
+        swMusik.setOnCheckedChangeListener(null)
+        swMusik.isChecked = Pengaturan.musikAktif(this)
+        swMusik.setOnCheckedChangeListener { _, on -> Pengaturan.simpanMusikAktif(this, on) }
+        val v = Pengaturan.musikVol(this)
+        if (seekMusik.progress != v) seekMusik.progress = v
+        txtVolMusik.text = "Volume musik $v%  ·  suara kamu 100%"
+    }
+
+    private fun pilihMusik() {
+        if (mikro.sedangJalan()) {
+            Toast.makeText(this, "Hentikan dulu sebelum ganti musik", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "audio/*"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        startActivityForResult(intent, 401)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 401 && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: Exception) {
+                // Izin sementara tetap bisa dipakai
+            }
+            Pengaturan.simpanMusik(this, uri.toString(), namaFile(uri))
+            Pengaturan.simpanMusikAktif(this, true)
+            segarkanMusik()
+        }
+    }
+
+    private fun namaFile(uri: Uri): String {
+        var nama = "musik.mp3"
+        try {
+            contentResolver.query(uri, null, null, null, null)?.use { c ->
+                val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (i >= 0 && c.moveToFirst()) nama = c.getString(i) ?: nama
+            }
+        } catch (e: Exception) {
+            // pakai nama default
+        }
+        return nama
+    }
+
     // ---------- tampilan ----------
 
     private fun buatLayar(): View {
@@ -344,6 +413,38 @@ class MainActivity : Activity() {
         baris.addView(btnRekam, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), dp(10), 0, 0) })
         kMic.addView(baris)
         root.addView(kMic, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(12), 0, 0, 0))
+
+        // Kartu musik latar
+        val kMusik = kartuTema(this)
+        kMusik.addView(teks(this, "🎵  Musik Latar", 17f, Tema.teks, true))
+        txtMusik = teks(this, "", 13f, Tema.redup)
+        kMusik.addView(txtMusik, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(8), 0, 0, 0))
+        val barisMusik = linear(this, false)
+        barisMusik.gravity = Gravity.CENTER_VERTICAL
+        barisMusik.addView(tombolUtama("📂  Pilih MP3") { pilihMusik() }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, dp(10), dp(6), 0) })
+        swMusik = Switch(this)
+        swMusik.text = "Pakai"
+        swMusik.setTextColor(Tema.teks)
+        swMusik.setOnCheckedChangeListener { _, on -> Pengaturan.simpanMusikAktif(this, on) }
+        barisMusik.addView(swMusik, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(10), 0, 0) })
+        kMusik.addView(barisMusik)
+        txtVolMusik = teks(this, "", 13f, Tema.cyan, true)
+        kMusik.addView(txtVolMusik, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(10), 0, 0, 0))
+        seekMusik = SeekBar(this)
+        seekMusik.max = 100
+        seekMusik.progressTintList = android.content.res.ColorStateList.valueOf(Tema.cyan)
+        seekMusik.thumbTintList = android.content.res.ColorStateList.valueOf(Tema.biru)
+        seekMusik.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
+                Pengaturan.simpanMusikVol(this@MainActivity, p)
+                txtVolMusik.text = "Volume musik $p%  ·  suara kamu 100%"
+            }
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) {}
+        })
+        kMusik.addView(seekMusik)
+        kMusik.addView(teks(this, "Musik dibuat lebih kecil dari suara kamu agar vokal tetap jelas.", 12f, Tema.redup), lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(6), 0, 0, 0))
+        root.addView(kMusik, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(12), 0, 0, 0))
 
         // Kartu teks ke suara
         val kTts = kartuTema(this)
