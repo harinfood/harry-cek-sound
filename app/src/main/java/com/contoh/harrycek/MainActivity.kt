@@ -6,35 +6,30 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.ColorStateList
 import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
-import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
-import android.view.View
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.SeekBar
-import android.net.Uri
-import android.provider.OpenableColumns
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
 
-/** Layar utama: mic (dengar & rekam), teks ke suara, iTag, dan daftar rekaman. */
 class MainActivity : Activity() {
 
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var mikro: Mikrofon
     private lateinit var suara: Suara
-    private var player: MediaPlayer? = null
 
+    // mikrofon
     private lateinit var chipHp: TextView
     private lateinit var chipBt: TextView
     private lateinit var barLevel: ProgressBar
@@ -42,38 +37,57 @@ class MainActivity : Activity() {
     private lateinit var btnRekam: TextView
     private lateinit var swDengarRekam: Switch
     private lateinit var txtTimer: TextView
-    private lateinit var etTeks: EditText
-    private lateinit var txtSuara: TextView
-    private lateinit var txtItag: TextView
-    private lateinit var btnItag: TextView
-    private lateinit var listRekaman: LinearLayout
-    private lateinit var txtMusik: TextView
+
+    // musik latar & pemutar
+    private lateinit var txtLagu: TextView
+    private lateinit var btnMainUtama: TextView
     private lateinit var swMusik: Switch
     private lateinit var seekMusik: SeekBar
     private lateinit var txtVolMusik: TextView
 
+    // teks ke suara
+    private lateinit var etTeks: EditText
+    private lateinit var txtSuara: TextView
+
+    // iTag
+    private lateinit var txtItag: TextView
+    private lateinit var btnItag: TextView
+    private lateinit var txtBel: TextView
+    private lateinit var seekBooster: SeekBar
+    private lateinit var txtBooster: TextView
+
+    private lateinit var listRekaman: LinearLayout
+
     private var sedangRekam = false
-    private var mulaiRekamMs = 0L
+    private var rekamModeAktif = false
+    private var mulaiMs = 0L
 
     private val penyegar = object : Runnable {
         override fun run() {
-            if (sedangRekam && mikro.sedangJalan()) {
-                val detik = (System.currentTimeMillis() - mulaiRekamMs) / 1000L
-                txtTimer.text = "%02d:%02d".format(detik / 60, detik % 60)
+            if (mikro.sedangJalan()) {
+                val detik = (System.currentTimeMillis() - mulaiMs) / 1000
+                txtTimer.text = String.format("%02d:%02d", detik / 60, detik % 60)
             }
-            handler.postDelayed(this, 500L)
+            segarkanTombolMikro()
+            segarkanMusikTombol()
+            handler.postDelayed(this, 300L)
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        suara = Suara(this)
         mikro = Mikrofon(this)
+        suara = Suara(this)
         mikro.onLevel = { lv -> barLevel.progress = lv }
-        mikro.onSelesai = { berkas -> selesaiMikro(berkas) }
         mikro.onError = { pesan -> Toast.makeText(this, pesan, Toast.LENGTH_LONG).show() }
-        setContentView(buatLayar())
-        etTeks.setText(Pengaturan.teksTts(this))
+        mikro.onSelesai = { berkas -> selesaiMikro(berkas) }
+        PemutarMusik.mikro = mikro
+
+        val scroll = ScrollView(this)
+        scroll.setBackgroundColor(Tema.latarAtas)
+        scroll.addView(buatLayar())
+        setContentView(scroll)
+
         mintaIzin()
         if (Pengaturan.itagMac(this) != null) ItagService.mulai(this)
     }
@@ -81,233 +95,126 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         ItagService.onStatus = { _ -> segarkanItag() }
-        segarkanItag()
-        segarkanRekaman()
-        segarkanSuara()
-        segarkanMicChip()
-        segarkanMusik()
-        segarkanTombol()
+        segarkanSemua()
         handler.removeCallbacks(penyegar)
         handler.post(penyegar)
     }
 
     override fun onPause() {
-        Pengaturan.simpanTeks(this, etTeks.text.toString())
-        ItagService.onStatus = null
         handler.removeCallbacks(penyegar)
+        Pengaturan.simpanTeks(this, etTeks.text.toString())
         super.onPause()
     }
 
     override fun onDestroy() {
-        mikro.berhenti()
         handler.removeCallbacksAndMessages(null)
+        mikro.berhenti()
+        if (isFinishing) PemutarMusik.hentikan()
         suara.tutup()
-        player?.release()
         super.onDestroy()
     }
 
-    // ---------- mic ----------
-
-    private fun izinMic(): Boolean =
-        checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-
     private fun mintaIzin() {
-        val daftar = mutableListOf<String>()
-        if (!izinMic()) daftar.add(Manifest.permission.RECORD_AUDIO)
-        if (Build.VERSION.SDK_INT >= 31) {
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
-                daftar.add(Manifest.permission.BLUETOOTH_CONNECT)
-            }
-            if (checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
-                daftar.add(Manifest.permission.BLUETOOTH_SCAN)
-            }
-        } else if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            daftar.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        }
-        if (Build.VERSION.SDK_INT >= 33 &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) {
-            daftar.add(Manifest.permission.POST_NOTIFICATIONS)
-        }
-        if (daftar.isNotEmpty()) requestPermissions(daftar.toTypedArray(), 301)
+        val daftar = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 31) daftar.add(Manifest.permission.BLUETOOTH_CONNECT)
+        if (Build.VERSION.SDK_INT >= 33) daftar.add(Manifest.permission.POST_NOTIFICATIONS)
+        val kurang = daftar.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (kurang.isNotEmpty()) requestPermissions(kurang.toTypedArray(), 100)
     }
 
+    // ---------- mikrofon ----------
+
     private fun tekanDengar() {
-        if (!izinMic()) {
-            mintaIzin()
-            return
-        }
         if (mikro.sedangJalan()) {
             mikro.berhenti()
             return
         }
-        sedangRekam = false
-        mikro.mulai(true, false, null, musikUriAktif(), volMusikAktif())
-        segarkanTombol()
+        mulaiMs = System.currentTimeMillis()
+        mulaiMikro(true, false, null)
     }
 
     private fun tekanRekam() {
-        if (!izinMic()) {
-            mintaIzin()
-            return
-        }
         if (mikro.sedangJalan()) {
             mikro.berhenti()
             return
         }
-        sedangRekam = true
-        mulaiRekamMs = System.currentTimeMillis()
-        txtTimer.text = "00:00"
-        mikro.mulai(swDengarRekam.isChecked, true, Rekaman.baru(this), musikUriAktif(), volMusikAktif())
-        segarkanTombol()
+        mulaiMs = System.currentTimeMillis()
+        mulaiMikro(swDengarRekam.isChecked, true, Rekaman.baru(this))
+    }
+
+    private fun mulaiMikro(monitor: Boolean, rekam: Boolean, berkas: File?) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 101)
+            Toast.makeText(this, "Izinkan mikrofon dulu", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val uri = musikUriAktif()
+        PemutarMusik.serahkanKeMikro(uri != null)
+        mikro.volMusikLive = volMusikAktif()
+        mikro.musikPutar = uri != null && PemutarMusik.sedangMain()
+        sedangRekam = rekam
+        rekamModeAktif = rekam
+        mikro.mulai(monitor, rekam, berkas, uri)
+        segarkanTombolMikro()
     }
 
     private fun selesaiMikro(berkas: File?) {
+        val rekam = rekamModeAktif
+        rekamModeAktif = false
         sedangRekam = false
-        if (berkas != null && berkas.exists()) {
-            Pengaturan.simpanRekamanTerakhir(this, berkas.absolutePath)
-            Toast.makeText(this, "Rekaman tersimpan", Toast.LENGTH_SHORT).show()
-        }
         barLevel.progress = 0
+        PemutarMusik.selesaiMikro()
+        if (rekam && berkas != null) {
+            Pengaturan.simpanRekamanTerakhir(this, berkas.absolutePath)
+            Toast.makeText(this, "Rekaman disimpan", Toast.LENGTH_SHORT).show()
+        } else if (rekam) {
+            Toast.makeText(this, "Rekaman gagal disimpan", Toast.LENGTH_SHORT).show()
+        }
         segarkanRekaman()
-        segarkanTombol()
+        segarkanTombolMikro()
     }
 
     private fun pilihMic(bt: Boolean) {
-        if (mikro.sedangJalan()) {
-            Toast.makeText(this, "Hentikan dulu sebelum ganti mic", Toast.LENGTH_SHORT).show()
-            return
-        }
+        if (mikro.sedangJalan()) return
         Pengaturan.simpanMicBt(this, bt)
-        segarkanMicChip()
+        segarkanChip()
     }
-
-    private fun segarkanMicChip() {
-        val bt = Pengaturan.micBluetooth(this)
-        styleChip(chipHp, !bt)
-        styleChip(chipBt, bt)
-    }
-
-    private fun styleChip(t: TextView, aktif: Boolean) {
-        t.background = if (aktif) kotakGradien(this, Tema.biru, Tema.cyan, 14) else kotak(this, Tema.tombol, 14)
-        t.setTextColor(if (aktif) Color.parseColor("#0A1628") else Tema.redup)
-    }
-
-    private fun segarkanTombol() {
-        val jalan = mikro.sedangJalan()
-        val rekam = jalan && sedangRekam
-        val dengar = jalan && !sedangRekam
-        btnDengar.text = if (dengar) "⏹  Stop Dengar" else "▶  Dengar"
-        btnRekam.text = if (rekam) "⏹  Stop Rekam" else "⏺  Rekam"
-        btnDengar.alpha = if (rekam) 0.4f else 1f
-        btnRekam.alpha = if (dengar) 0.4f else 1f
-        if (!jalan) {
-            barLevel.progress = 0
-            if (!sedangRekam) txtTimer.text = "00:00"
-        }
-    }
-
-    // ---------- teks ke suara ----------
-
-    private fun segarkanSuara() {
-        val nama = mapOf(
-            "normal" to "Normal", "anak" to "Suara Anak", "berat" to "Suara Berat",
-            "robot" to "Robot", "cepat" to "Cepat", "pelan" to "Pelan & Jelas", "kustom" to "Kustom"
-        )
-        txtSuara.text = "Gaya: ${nama[Pengaturan.gaya(this)] ?: "Normal"}  ·  Nada ${"%.2f".format(Pengaturan.nada(this))}  ·  Kecepatan ${"%.2f".format(Pengaturan.kecepatan(this))}"
-    }
-
-    private fun putarTeks() {
-        val t = etTeks.text.toString()
-        Pengaturan.simpanTeks(this, t)
-        if (t.isBlank()) {
-            Toast.makeText(this, "Tulis teks dulu", Toast.LENGTH_SHORT).show()
-            return
-        }
-        suara.bicara(t)
-    }
-
-    // ---------- iTag ----------
-
-    private fun segarkanItag() {
-        val mac = Pengaturan.itagMac(this)
-        txtItag.text = when {
-            mac == null -> "Belum ada iTag. Tekan tombol di bawah untuk menghubungkan."
-            ItagService.terhubung -> "✅  iTag terhubung"
-            else -> "⏳  iTag belum terhubung. Nyalakan iTag, sambungan dicoba otomatis."
-        }
-        txtItag.setTextColor(if (ItagService.terhubung) Tema.hijau else Tema.redup)
-        btnItag.text = if (mac == null) "🔗  Hubungkan iTag" else "✖  Lepas iTag"
-    }
-
-    // ---------- rekaman ----------
-
-    private fun segarkanRekaman() {
-        listRekaman.removeAllViews()
-        val daftar = Rekaman.daftar(this).take(10)
-        if (daftar.isEmpty()) {
-            listRekaman.addView(teks(this, "Belum ada rekaman.", 13f, Tema.redup))
-            return
-        }
-        for (f in daftar) {
-            val baris = linear(this, false)
-            baris.gravity = Gravity.CENTER_VERTICAL
-            val info = linear(this)
-            info.addView(teks(this, Rekaman.waktuTampil(f), 14f, Tema.teks, true))
-            info.addView(teks(this, "${f.length() / 1024} KB", 12f, Tema.redup))
-            baris.addView(info, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            baris.addView(aksiKecil("▶") { putarFile(f.absolutePath) })
-            baris.addView(aksiKecil("🗑") { hapusRekaman(f) })
-            listRekaman.addView(baris, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, 0, 0, 0, dp(8)))
-        }
-    }
-
-    private fun aksiKecil(label: String, aksi: () -> Unit): TextView {
-        val t = teks(this, label, 16f, Tema.teks, true)
-        t.gravity = Gravity.CENTER
-        t.setPadding(dp(14), dp(10), dp(14), dp(10))
-        t.background = riak(this, Tema.tombol, 14)
-        t.setOnClickListener { aksi() }
-        t.layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-            marginStart = dp(6)
-        }
-        return t
-    }
-
-    private fun putarFile(path: String) {
-        try {
-            player?.release()
-            player = MediaPlayer().apply {
-                setDataSource(path)
-                prepare()
-                start()
-            }
-        } catch (e: Exception) {
-            Toast.makeText(this, "Rekaman tidak bisa diputar", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun hapusRekaman(f: File) {
-        if (f.absolutePath == Pengaturan.rekamanTerakhir(this)) {
-            val lain = Rekaman.daftar(this).firstOrNull { it.absolutePath != f.absolutePath }
-            Pengaturan.simpanRekamanTerakhir(this, lain?.absolutePath)
-        }
-        f.delete()
-        segarkanRekaman()
-    }
-
-    // ---------- musik latar ----------
 
     private fun musikUriAktif(): Uri? {
         if (!Pengaturan.musikAktif(this)) return null
-        return Pengaturan.musikUri(this)?.let { Uri.parse(it) }
+        return Playlist.lagu(this, Pengaturan.musikIndex(this))?.let { Uri.parse(it.uri) }
     }
 
     private fun volMusikAktif(): Float = Pengaturan.musikVol(this) / 100f
 
+    // ---------- musik ----------
+
+    private fun tekanMainUtama() {
+        if (PemutarMusik.sedangMain()) {
+            PemutarMusik.jeda()
+        } else {
+            if (Playlist.ambil(this).isEmpty()) {
+                Toast.makeText(this, "Tambahkan lagu di Pemutar Musik dulu", Toast.LENGTH_SHORT).show()
+                return
+            }
+            PemutarMusik.mainkan(this)
+        }
+        segarkanMusikTombol()
+    }
+
+    private fun segarkanMusikTombol() {
+        val lagu = Playlist.lagu(this, Pengaturan.musikIndex(this))
+        val main = PemutarMusik.sedangMain()
+        txtLagu.text = if (lagu == null) {
+            "Belum ada lagu. Buka Pemutar Musik untuk menambah."
+        } else {
+            "${if (main) "▶" else "⏸"}  ${lagu.nama}"
+        }
+        btnMainUtama.text = if (main) "⏸" else "▶"
+    }
+
     private fun segarkanMusik() {
-        val nama = Pengaturan.musikNama(this)
-        txtMusik.text = if (nama.isEmpty()) "Belum ada MP3 dipilih" else "🎶 $nama"
+        segarkanMusikTombol()
         swMusik.setOnCheckedChangeListener(null)
         swMusik.isChecked = Pengaturan.musikAktif(this)
         swMusik.setOnCheckedChangeListener { _, on -> Pengaturan.simpanMusikAktif(this, on) }
@@ -316,198 +223,297 @@ class MainActivity : Activity() {
         txtVolMusik.text = "Volume musik $v%  ·  suara kamu 100%"
     }
 
-    private fun pilihMusik() {
-        if (mikro.sedangJalan()) {
-            Toast.makeText(this, "Hentikan dulu sebelum ganti musik", Toast.LENGTH_SHORT).show()
-            return
+    // ---------- iTag ----------
+
+    private fun segarkanItag() {
+        val mac = Pengaturan.itagMac(this)
+        txtItag.text = when {
+            mac == null -> "Belum ada iTag dipasangkan"
+            ItagService.terhubung -> "✅ iTag terhubung"
+            else -> "⏳ iTag tersimpan, belum tersambung"
         }
+        btnItag.text = if (mac == null) "📡  Pasangkan iTag" else "📡  Ganti iTag"
+        val belNama = Pengaturan.belNama(this)
+        txtBel.text = if (Pengaturan.belUri(this) == null) "Belum ada MP3 bel" else "🔔 Bel: $belNama"
+        val db = Pengaturan.boosterDb(this)
+        if (seekBooster.progress != db) seekBooster.progress = db
+        txtBooster.text = "Booster: +$db dB  (volume 100% + penguatan)"
+    }
+
+    private fun pilihBel() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "audio/*"
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         }
-        startActivityForResult(intent, 401)
+        startActivityForResult(intent, 402)
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 401 && resultCode == RESULT_OK) {
-            val uri = data?.data ?: return
-            try {
-                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            } catch (e: Exception) {
-                // Izin sementara tetap bisa dipakai
-            }
-            Pengaturan.simpanMusik(this, uri.toString(), namaFile(uri))
-            Pengaturan.simpanMusikAktif(this, true)
-            segarkanMusik()
+    private fun putuskanItag() {
+        Pengaturan.simpanItag(this, null)
+        ItagService.henti(this)
+        segarkanItag()
+    }
+
+    // ---------- teks ke suara ----------
+
+    private fun putarTeks() {
+        val t = etTeks.text.toString()
+        Pengaturan.simpanTeks(this, t)
+        suara.bicara(t)
+    }
+
+    private fun segarkanSuara() {
+        txtSuara.text = "Nada ${String.format("%.2f", Pengaturan.nada(this))}  ·  " +
+            "Kecepatan ${String.format("%.2f", Pengaturan.kecepatan(this))}  ·  Gaya ${Pengaturan.gaya(this)}"
+    }
+
+    // ---------- rekaman ----------
+
+    private fun segarkanRekaman() {
+        listRekaman.removeAllViews()
+        val daftar = Rekaman.daftar(this)
+        if (daftar.isEmpty()) {
+            listRekaman.addView(teks(this, "Belum ada rekaman", 13f, Tema.redup))
+            return
+        }
+        for (f in daftar.take(20)) {
+            val baris = linear(this, false)
+            baris.gravity = Gravity.CENTER_VERTICAL
+            baris.setPadding(dp(10), dp(8), dp(10), dp(8))
+            baris.background = kotak(this, Tema.tombol, 12, Tema.garis)
+            baris.addView(teks(this, Rekaman.waktuTampil(f), 13f, Tema.teks), lp(0, PAS, 1f))
+            baris.addView(ikonAksi("▶", Tema.hijau) { putarRekaman(f) }, lp(PAS, PAS))
+            listRekaman.addView(baris, lp(PENUH, PAS, 0f, 0, 0, 0, dp(6)))
         }
     }
 
-    private fun namaFile(uri: Uri): String {
-        var nama = "musik.mp3"
+    private fun putarRekaman(f: File) {
         try {
-            contentResolver.query(uri, null, null, null, null)?.use { c ->
-                val i = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (i >= 0 && c.moveToFirst()) nama = c.getString(i) ?: nama
-            }
+            Booster.putar(this, { p -> p.setDataSource(f.absolutePath) })
         } catch (e: Exception) {
-            // pakai nama default
+            Toast.makeText(this, "Rekaman tidak bisa diputar", Toast.LENGTH_SHORT).show()
         }
-        return nama
+    }
+
+    // ---------- status tombol ----------
+
+    private fun segarkanSemua() {
+        segarkanChip()
+        segarkanMusik()
+        segarkanItag()
+        segarkanRekaman()
+        segarkanTombolMikro()
+        segarkanSuara()
+    }
+
+    private fun segarkanChip() {
+        val bt = Pengaturan.micBluetooth(this)
+        gayaChip(chipHp, !bt)
+        gayaChip(chipBt, bt)
+    }
+
+    private fun gayaChip(t: TextView, aktif: Boolean) {
+        t.background = riak(this, if (aktif) Tema.biru else Tema.tombol, 12, Tema.garis)
+        t.setTextColor(if (aktif) Color.BLACK else Tema.teks)
+    }
+
+    private fun segarkanTombolMikro() {
+        val jalan = mikro.sedangJalan()
+        btnDengar.text = if (jalan && !sedangRekam) "⏹  Berhenti" else "🎧  Dengar langsung"
+        btnRekam.text = if (jalan && sedangRekam) "⏹  Berhenti & simpan" else "⏺  Rekam"
+        swDengarRekam.isEnabled = !jalan
+        chipHp.isEnabled = !jalan
+        chipBt.isEnabled = !jalan
+        if (!jalan) {
+            barLevel.progress = 0
+        }
     }
 
     // ---------- tampilan ----------
 
-    private fun buatLayar(): View {
-        val scroll = ScrollView(this)
-        scroll.isFillViewport = true
-        scroll.setBackgroundColor(Tema.latarAtas)
+    private fun buatLayar(): LinearLayout {
         val root = akarLatar()
-        scroll.addView(root)
 
-        // Header dengan logo
+        // header
         val header = linear(this, false)
         header.gravity = Gravity.CENTER_VERTICAL
-        header.setPadding(dp(4), dp(10), dp(4), dp(14))
         val logo = ImageView(this)
         logo.setImageResource(R.drawable.logo_cek)
-        logo.scaleType = ImageView.ScaleType.FIT_CENTER
-        header.addView(logo, LinearLayout.LayoutParams(dp(78), dp(78)).apply { marginEnd = dp(10) })
-        val kolom = linear(this)
-        kolom.addView(teks(this, "HARRY CEK SOUND", 22f, Tema.cyan, true))
-        kolom.addView(teks(this, "cek microphone by Harinfood", 13f, Tema.redup))
-        header.addView(kolom, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        root.addView(header)
+        logo.adjustViewBounds = true
+        header.addView(logo, lp(dp(56), dp(56), 0f, 0, 0, dp(10), 0))
+        val judulBox = linear(this)
+        judulBox.addView(teks(this, "Harry Cek Sound", 20f, Tema.teks, true))
+        judulBox.addView(teks(this, "cek microphone by Harinfood", 12f, Tema.redup))
+        header.addView(judulBox, lp(0, PAS, 1f))
+        root.addView(header, lp(PENUH, PAS, 0f, 0, 0, 0, dp(12)))
 
-        // Kartu mikrofon
+        // kartu mikrofon
         val kMic = kartuTema(this)
-        kMic.addView(teks(this, "🎤  Microphone", 17f, Tema.teks, true))
-        val chips = linear(this, false)
-        chipHp = chipPilih("📱  Mic HP") { pilihMic(false) }
-        chipBt = chipPilih("🎧  Mic Bluetooth") { pilihMic(true) }
-        chips.addView(chipHp, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, dp(10), dp(4), 0) })
-        chips.addView(chipBt, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), dp(10), 0, 0) })
-        kMic.addView(chips)
+        kMic.addView(teks(this, "🎤  Mikrofon", 17f, Tema.teks, true))
+        val barisMic = linear(this, false)
+        chipHp = teks(this, "📱 HP", 13f, Tema.teks, true)
+        chipHp.gravity = Gravity.CENTER
+        chipHp.setPadding(dp(10), dp(8), dp(10), dp(8))
+        chipHp.setOnClickListener { pilihMic(false) }
+        chipBt = teks(this, "🎧 Bluetooth", 13f, Tema.teks, true)
+        chipBt.gravity = Gravity.CENTER
+        chipBt.setPadding(dp(10), dp(8), dp(10), dp(8))
+        chipBt.setOnClickListener { pilihMic(true) }
+        barisMic.addView(chipHp, lp(0, PAS, 1f, dp(8), 0, dp(6), 0))
+        barisMic.addView(chipBt, lp(0, PAS, 1f, dp(8), dp(6), 0, 0))
+        kMic.addView(barisMic)
 
         barLevel = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
         barLevel.max = 100
-        barLevel.progressTintList = ColorStateList.valueOf(Tema.cyan)
-        barLevel.progressBackgroundTintList = ColorStateList.valueOf(Tema.garis)
-        kMic.addView(barLevel, lp(LinearLayout.LayoutParams.MATCH_PARENT, dp(14), 0f, dp(12), 0, 0, 0))
+        barLevel.progress = 0
+        barLevel.progressTintList = ColorStateList.valueOf(Tema.hijau)
+        kMic.addView(barLevel, lp(PENUH, dp(10), 0f, dp(10), 0, 0, 0))
+
+        txtTimer = teks(this, "00:00", 30f, Tema.cyan, true)
+        txtTimer.gravity = Gravity.CENTER
+        kMic.addView(txtTimer, lp(PENUH, PAS, 0f, dp(8), 0, 0, 0))
+
+        val barisTombol = linear(this, false)
+        btnDengar = aksiTombol("🎧  Dengar langsung") { tekanDengar() }
+        btnRekam = aksiTombol("⏺  Rekam") { tekanRekam() }
+        barisTombol.addView(btnDengar, lp(0, PAS, 1f, dp(10), 0, dp(6), 0))
+        barisTombol.addView(btnRekam, lp(0, PAS, 1f, dp(10), dp(6), 0, 0))
+        kMic.addView(barisTombol)
 
         swDengarRekam = Switch(this)
         swDengarRekam.text = "Dengar saat merekam"
         swDengarRekam.setTextColor(Tema.teks)
-        swDengarRekam.isChecked = true
-        kMic.addView(swDengarRekam, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(8), 0, 0, 0))
+        kMic.addView(swDengarRekam, lp(PAS, PAS, 0f, dp(8), 0, 0, 0))
+        root.addView(kMic, lp(PENUH, PAS, 0f, 0, 0, 0, 0))
 
-        txtTimer = teks(this, "00:00", 34f, Tema.cyan, true)
-        txtTimer.gravity = Gravity.CENTER
-        kMic.addView(txtTimer, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(6), 0, 0, 0))
-
-        val baris = linear(this, false)
-        btnDengar = tombolUtama("▶  Dengar") { tekanDengar() }
-        btnRekam = tombolUtama("⏺  Rekam") { tekanRekam() }
-        baris.addView(btnDengar, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, dp(10), dp(4), 0) })
-        baris.addView(btnRekam, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), dp(10), 0, 0) })
-        kMic.addView(baris)
-        root.addView(kMic, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(12), 0, 0, 0))
-
-        // Kartu musik latar
+        // kartu musik latar & pemutar
         val kMusik = kartuTema(this)
-        kMusik.addView(teks(this, "🎵  Musik Latar", 17f, Tema.teks, true))
-        txtMusik = teks(this, "", 13f, Tema.redup)
-        kMusik.addView(txtMusik, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(8), 0, 0, 0))
-        val barisMusik = linear(this, false)
-        barisMusik.gravity = Gravity.CENTER_VERTICAL
-        barisMusik.addView(tombolUtama("📂  Pilih MP3") { pilihMusik() }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, dp(10), dp(6), 0) })
+        kMusik.addView(teks(this, "🎵  Musik Latar & Pemutar", 17f, Tema.teks, true))
+        txtLagu = teks(this, "", 14f, Tema.redup)
+        kMusik.addView(txtLagu, lp(PENUH, PAS, 0f, dp(6), 0, 0, 0))
+
+        val kontrolM = linear(this, false)
+        kontrolM.gravity = Gravity.CENTER
+        kontrolM.addView(tombolBulatAksi("⏮", 50) { PemutarMusik.sebelum(this) }, lp(dp(50), dp(50), 0f, dp(10), 0, dp(10), 0))
+        btnMainUtama = tombolBulatAksi("▶", 60) { tekanMainUtama() }
+        kontrolM.addView(btnMainUtama, lp(dp(60), dp(60), 0f, dp(10), 0, dp(10), 0))
+        kontrolM.addView(tombolBulatAksi("⏭", 50) { PemutarMusik.berikut(this) }, lp(dp(50), dp(50), 0f, dp(10), 0, 0, 0))
+        kMusik.addView(kontrolM, lp(PENUH, PAS))
+
+        kMusik.addView(aksiTombol("🎵  Buka Pemutar & Daftar Lagu") {
+            startActivity(Intent(this, PemutarActivity::class.java))
+        }, lp(PENUH, PAS, 0f, dp(10), 0, 0, 0))
+
         swMusik = Switch(this)
-        swMusik.text = "Pakai"
+        swMusik.text = "Pakai musik latar saat rekam / dengar"
         swMusik.setTextColor(Tema.teks)
-        swMusik.setOnCheckedChangeListener { _, on -> Pengaturan.simpanMusikAktif(this, on) }
-        barisMusik.addView(swMusik, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, dp(10), 0, 0) })
-        kMusik.addView(barisMusik)
+        kMusik.addView(swMusik, lp(PENUH, PAS, 0f, dp(10), 0, 0, 0))
+
         txtVolMusik = teks(this, "", 13f, Tema.cyan, true)
-        kMusik.addView(txtVolMusik, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(10), 0, 0, 0))
+        kMusik.addView(txtVolMusik, lp(PENUH, PAS, 0f, dp(8), 0, 0, 0))
         seekMusik = SeekBar(this)
         seekMusik.max = 100
-        seekMusik.progressTintList = android.content.res.ColorStateList.valueOf(Tema.cyan)
-        seekMusik.thumbTintList = android.content.res.ColorStateList.valueOf(Tema.biru)
+        seekMusik.progressTintList = ColorStateList.valueOf(Tema.cyan)
+        seekMusik.thumbTintList = ColorStateList.valueOf(Tema.biru)
         seekMusik.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(s: SeekBar?, p: Int, fromUser: Boolean) {
-                Pengaturan.simpanMusikVol(this@MainActivity, p)
-                txtVolMusik.text = "Volume musik $p%  ·  suara kamu 100%"
+            override fun onProgressChanged(s: SeekBar?, nilai: Int, dariUser: Boolean) {
+                if (dariUser) PemutarMusik.aturVolume(this@MainActivity, nilai)
+                txtVolMusik.text = "Volume musik $nilai%  ·  suara kamu 100%"
             }
             override fun onStartTrackingTouch(s: SeekBar?) {}
             override fun onStopTrackingTouch(s: SeekBar?) {}
         })
         kMusik.addView(seekMusik)
-        kMusik.addView(teks(this, "Musik dibuat lebih kecil dari suara kamu agar vokal tetap jelas.", 12f, Tema.redup), lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(6), 0, 0, 0))
-        root.addView(kMusik, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(12), 0, 0, 0))
+        kMusik.addView(
+            teks(this, "Musik latar dibuat lebih kecil dari suara kamu agar vokal tetap jelas.", 12f, Tema.redup),
+            lp(PENUH, PAS, 0f, dp(6), 0, 0, 0)
+        )
+        root.addView(kMusik, lp(PENUH, PAS, 0f, dp(12), 0, 0, 0))
 
-        // Kartu teks ke suara
+        // kartu teks ke suara
         val kTts = kartuTema(this)
-        kTts.addView(teks(this, "💬  Teks ke Suara", 17f, Tema.teks, true))
+        kTts.addView(teks(this, "🗣  Teks ke Suara", 17f, Tema.teks, true))
         etTeks = EditText(this)
-        etTeks.hint = "Tulis teks yang ingin diucapkan..."
-        etTeks.setHintTextColor(Tema.redup)
+        etTeks.setText(Pengaturan.teksTts(this))
         etTeks.setTextColor(Tema.teks)
-        etTeks.minLines = 3
-        etTeks.gravity = Gravity.TOP or Gravity.START
-        etTeks.background = kotak(this, Tema.tombol, 14)
+        etTeks.setHintTextColor(Tema.redup)
+        etTeks.hint = "Tulis kalimat..."
+        etTeks.minLines = 2
         etTeks.setPadding(dp(12), dp(10), dp(12), dp(10))
-        kTts.addView(etTeks, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(10), 0, 0, 0))
+        etTeks.background = kotak(this, Tema.tombol, 12, Tema.garis)
+        kTts.addView(etTeks, lp(PENUH, PAS, 0f, dp(8), 0, 0, 0))
         val barisTts = linear(this, false)
-        barisTts.addView(tombolUtama("🔊  Putar") { putarTeks() }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(0, dp(10), dp(4), 0) })
-        barisTts.addView(tombolUtama("🎭  Atur Suara") { startActivity(Intent(this, SettingsActivity::class.java)) }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply { setMargins(dp(4), dp(10), 0, 0) })
+        barisTts.addView(aksiTombol("🔊  Putar Teks") { putarTeks() }, lp(0, PAS, 1f, dp(8), 0, dp(6), 0))
+        barisTts.addView(aksiTombol("⚙  Atur Suara") {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }, lp(0, PAS, 1f, dp(8), dp(6), 0, 0))
         kTts.addView(barisTts)
         txtSuara = teks(this, "", 12f, Tema.redup)
-        kTts.addView(txtSuara, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(8), 0, 0, 0))
-        root.addView(kTts, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(12), 0, 0, 0))
+        kTts.addView(txtSuara, lp(PENUH, PAS, 0f, dp(6), 0, 0, 0))
+        root.addView(kTts, lp(PENUH, PAS, 0f, dp(12), 0, 0, 0))
 
-        // Kartu iTag
+        // kartu iTag
         val kItag = kartuTema(this)
-        kItag.addView(teks(this, "🔘  Tombol iTag", 17f, Tema.teks, true))
+        kItag.addView(teks(this, "🔔  iTag Tombol", 17f, Tema.teks, true))
         txtItag = teks(this, "", 14f, Tema.redup)
-        kItag.addView(txtItag, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(8), 0, 0, 0))
-        kItag.addView(teks(this, "1× tekan = bacakan teks  ·  2× tekan = putar rekaman terakhir", 12f, Tema.cyan), lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(6), 0, 0, 0))
-        btnItag = tombolUtama("🔗  Hubungkan iTag") {
-            if (Pengaturan.itagMac(this) == null) {
-                startActivity(Intent(this, ItagPairActivity::class.java))
-            } else {
-                ItagService.henti(this)
-                Pengaturan.simpanItag(this, null)
-                segarkanItag()
-            }
+        kItag.addView(txtItag, lp(PENUH, PAS, 0f, dp(6), 0, 0, 0))
+        val barisItag = linear(this, false)
+        btnItag = aksiTombol("📡  Pasangkan iTag") {
+            startActivity(Intent(this, ItagPairActivity::class.java))
         }
-        kItag.addView(btnItag, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(10), 0, 0, 0))
-        root.addView(kItag, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(12), 0, 0, 0))
+        barisItag.addView(btnItag, lp(0, PAS, 1f, dp(8), 0, dp(6), 0))
+        barisItag.addView(aksiTombol("✖  Putuskan") { putuskanItag() }, lp(0, PAS, 1f, dp(8), dp(6), 0, 0))
+        kItag.addView(barisItag)
+        kItag.addView(
+            teks(this, "1× tekan: MP3 bel\n2× tekan: putar rekaman\n3× tekan: bacakan teks (TTS)\nBunyi iTag diputar 100% dengan booster.", 13f, Tema.redup),
+            lp(PENUH, PAS, 0f, dp(8), 0, 0, 0)
+        )
+        kItag.addView(aksiTombol("📂  Pilih MP3 Bel") { pilihBel() }, lp(PENUH, PAS, 0f, dp(8), 0, 0, 0))
+        txtBel = teks(this, "", 13f, Tema.redup)
+        kItag.addView(txtBel, lp(PENUH, PAS, 0f, dp(4), 0, 0, 0))
+        txtBooster = teks(this, "", 13f, Tema.cyan, true)
+        kItag.addView(txtBooster, lp(PENUH, PAS, 0f, dp(10), 0, 0, 0))
+        seekBooster = SeekBar(this)
+        seekBooster.max = 15
+        seekBooster.progressTintList = ColorStateList.valueOf(Tema.kuning)
+        seekBooster.thumbTintList = ColorStateList.valueOf(Tema.kuning)
+        seekBooster.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(s: SeekBar?, nilai: Int, dariUser: Boolean) {
+                if (dariUser) Pengaturan.simpanBoosterDb(this@MainActivity, nilai)
+                txtBooster.text = "Booster: +$nilai dB  (volume 100% + penguatan)"
+            }
+            override fun onStartTrackingTouch(s: SeekBar?) {}
+            override fun onStopTrackingTouch(s: SeekBar?) {}
+        })
+        kItag.addView(seekBooster)
+        root.addView(kItag, lp(PENUH, PAS, 0f, dp(12), 0, 0, 0))
 
-        // Kartu rekaman
+        // kartu rekaman
         val kRek = kartuTema(this)
         kRek.addView(teks(this, "📼  Rekaman", 17f, Tema.teks, true))
         listRekaman = linear(this)
-        kRek.addView(listRekaman, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(10), 0, 0, 0))
-        root.addView(kRek, lp(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT, 0f, dp(12), 0, 0, 0))
+        kRek.addView(listRekaman, lp(PENUH, PAS, 0f, dp(8), 0, 0, 0))
+        root.addView(kRek, lp(PENUH, PAS, 0f, dp(12), 0, 0, 0))
 
-        return scroll
+        // pemasangan awal teks dari pengaturan
+        segarkanSuara()
+        return root
     }
 
-    private fun chipPilih(label: String, aksi: () -> Unit): TextView {
-        val t = teks(this, label, 13f, Tema.teks, true)
-        t.gravity = Gravity.CENTER
-        t.setPadding(dp(8), dp(12), dp(8), dp(12))
-        t.setOnClickListener { aksi() }
-        return t
-    }
+    // ---------- hasil dari pemilih file ----------
 
-    private fun tombolUtama(label: String, aksi: () -> Unit): TextView {
-        val t = teks(this, label, 15f, Tema.teks, true)
-        t.gravity = Gravity.CENTER
-        t.setPadding(dp(10), dp(14), dp(10), dp(14))
-        t.background = riak(this, Tema.biru, 18)
-        t.setOnClickListener { aksi() }
-        return t
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 402 && resultCode == RESULT_OK) {
+            val uri = data?.data ?: return
+            try {
+                contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (e: Exception) {
+                // izin sementara tetap bisa dipakai
+            }
+            Pengaturan.simpanBel(this, uri.toString(), namaFileUri(uri))
+            segarkanItag()
+        }
     }
 }

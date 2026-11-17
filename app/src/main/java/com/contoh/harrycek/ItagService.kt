@@ -17,6 +17,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.MediaPlayer
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -26,8 +27,9 @@ import java.io.File
 import java.util.UUID
 
 /**
- * Layanan iTag di latar belakang: menjaga sambungan BLE dan menangani tombol.
- * 1x tekan = bacakan teks (TTS). 2x tekan = putar rekaman terakhir.
+ * Layanan iTag di latar belakang.
+ * 1x tekan = MP3 bel khusus.  2x tekan = putar rekaman terakhir.  3x tekan = TTS (teks).
+ * Semua bunyi diputar 100% dengan booster.
  */
 class ItagService : Service() {
 
@@ -38,7 +40,7 @@ class ItagService : Service() {
         private const val ID_NOTIF = 3001
         private const val KANAL = "itag"
         private const val JEDA_PANTUL = 60L
-        private const val JENDELA_DOUBLE = 500L
+        private const val JENDELA_KETUKAN = 500L
 
         @Volatile
         var terhubung = false
@@ -59,14 +61,15 @@ class ItagService : Service() {
         }
 
         fun henti(c: Context) {
-            c.stopService(Intent(c, ItagService::class.java))
+            try {
+                c.stopService(Intent(c, ItagService::class.java))
+            } catch (e: Exception) { }
         }
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private var gatt: BluetoothGatt? = null
     private var suara: Suara? = null
-    private var player: MediaPlayer? = null
     private var lastPressMs = 0L
     private var timerAktif = false
     private var jumlahTekan = 0
@@ -171,7 +174,7 @@ class ItagService : Service() {
         jumlahTekan++
         if (!timerAktif) {
             timerAktif = true
-            handler.postDelayed(selesaiTimer, JENDELA_DOUBLE)
+            handler.postDelayed(selesaiTimer, JENDELA_KETUKAN)
         }
     }
 
@@ -179,34 +182,56 @@ class ItagService : Service() {
         timerAktif = false
         val n = jumlahTekan
         jumlahTekan = 0
-        if (n >= 2) putarRekaman() else bacakanTeks()
-    }
-
-    private fun bacakanTeks() {
-        val t = Pengaturan.teksTts(this)
-        if (t.isBlank()) {
-            suara?.bicara("Tulisan masih kosong")
-        } else {
-            suara?.bicara(t)
+        when {
+            n >= 3 -> bacakanBerkas()
+            n == 2 -> putarRekaman()
+            else -> putarBel()
         }
     }
 
+    /** 1x tekan: MP3 bel khusus. */
+    private fun putarBel() {
+        val uri = Pengaturan.belUri(this)
+        if (uri == null) {
+            suara?.bicara("Belum ada MP3 bel")
+            return
+        }
+        mainkanAman { p -> p.setDataSource(this, Uri.parse(uri)) }
+    }
+
+    /** 2x tekan: putar rekaman terakhir. */
     private fun putarRekaman() {
         val path = Pengaturan.rekamanTerakhir(this)
         if (path == null || !File(path).exists()) {
             suara?.bicara("Belum ada rekaman")
             return
         }
-        try {
-            player?.release()
-            player = MediaPlayer().apply {
-                setDataSource(path)
-                prepare()
-                start()
-                setOnCompletionListener { it.release() }
+        mainkanAman { p -> p.setDataSource(path) }
+    }
+
+    /** 3x tekan: TTS dibuat jadi berkas dulu, lalu diputar dengan booster. */
+    private fun bacakanBerkas() {
+        val teks = Pengaturan.teksTts(this)
+        if (teks.isBlank()) {
+            suara?.bicara("Tulisan masih kosong")
+            return
+        }
+        val s = suara ?: return
+        val berkas = File(cacheDir, "itag_tts.wav")
+        s.keBerkas(teks, berkas) { ok ->
+            if (ok && berkas.exists() && berkas.length() > 44) {
+                mainkanAman { p -> p.setDataSource(berkas.absolutePath) }
+            } else {
+                suara?.bicara(teks)
             }
+        }
+    }
+
+    private fun mainkanAman(sumber: (MediaPlayer) -> Unit) {
+        try {
+            Booster.putar(this, sumber)
         } catch (e: Exception) {
-            suara?.bicara("Rekaman tidak bisa diputar")
+            suara?.bicara("Berkas tidak bisa diputar")
         }
     }
 
@@ -216,7 +241,7 @@ class ItagService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val isi = if (sudahTerhubung) {
-            "iTag terhubung · 1x tekan: TTS · 2x tekan: rekaman"
+            "iTag terhubung · 1x: bel · 2x: rekaman · 3x: TTS"
         } else {
             "Mencari iTag… tekan tombol iTag setelah tersambung"
         }
@@ -245,7 +270,7 @@ class ItagService : Service() {
         terhubung = false
         onStatus?.invoke(false)
         suara?.tutup()
-        player?.release()
+        Booster.stop()
         super.onDestroy()
     }
 }

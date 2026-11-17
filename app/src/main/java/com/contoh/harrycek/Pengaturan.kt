@@ -2,12 +2,13 @@ package com.contoh.harrycek
 
 import android.content.Context
 
-/** Semua pengaturan aplikasi: teks, gaya suara, iTag, mic, dan rekaman terakhir. */
+/** Semua pengaturan aplikasi. */
 object Pengaturan {
     private const val NAMA = "harry_cek_sound"
 
     private fun p(c: Context) = c.getSharedPreferences(NAMA, Context.MODE_PRIVATE)
 
+    // ---- teks ke suara ----
     fun teksTts(c: Context): String = p(c).getString("teks", "Halo, ini suara saya.") ?: ""
 
     fun simpanTeks(c: Context, t: String) {
@@ -24,6 +25,7 @@ object Pengaturan {
         p(c).edit().putFloat("nada", nada).putFloat("kecepatan", kecepatan).putString("gaya", gaya).apply()
     }
 
+    // ---- iTag ----
     fun itagMac(c: Context): String? = p(c).getString("itag_mac", null)
 
     fun simpanItag(c: Context, mac: String?) {
@@ -32,6 +34,25 @@ object Pengaturan {
         e.apply()
     }
 
+    /** MP3 khusus untuk bunyi bel (1x tekan). */
+    fun belUri(c: Context): String? = p(c).getString("bel_uri", null)
+
+    fun belNama(c: Context): String = p(c).getString("bel_nama", "") ?: ""
+
+    fun simpanBel(c: Context, uri: String?, nama: String) {
+        val e = p(c).edit()
+        if (uri == null) e.remove("bel_uri") else e.putString("bel_uri", uri)
+        e.putString("bel_nama", nama).apply()
+    }
+
+    /** Booster bunyi iTag dalam dB (0-15), di atas volume 100%. */
+    fun boosterDb(c: Context): Int = p(c).getInt("booster_db", 6)
+
+    fun simpanBoosterDb(c: Context, v: Int) {
+        p(c).edit().putInt("booster_db", v.coerceIn(0, 15)).apply()
+    }
+
+    // ---- mic ----
     fun micBluetooth(c: Context): Boolean = p(c).getBoolean("mic_bt", false)
 
     fun simpanMicBt(c: Context, v: Boolean) {
@@ -40,30 +61,35 @@ object Pengaturan {
 
     fun rekamanTerakhir(c: Context): String? = p(c).getString("rekaman_terakhir", null)
 
-    fun musikUri(c: Context): String? = p(c).getString("musik_uri", null)
-
-    fun musikNama(c: Context): String = p(c).getString("musik_nama", "") ?: ""
-
-    fun simpanMusik(c: Context, uri: String, nama: String) {
-        p(c).edit().putString("musik_uri", uri).putString("musik_nama", nama).apply()
+    fun simpanRekamanTerakhir(c: Context, path: String?) {
+        val e = p(c).edit()
+        if (path == null) e.remove("rekaman_terakhir") else e.putString("rekaman_terakhir", path)
+        e.apply()
     }
 
+    // ---- musik latar & pemutar ----
     fun musikAktif(c: Context): Boolean = p(c).getBoolean("musik_aktif", false)
 
     fun simpanMusikAktif(c: Context, v: Boolean) {
         p(c).edit().putBoolean("musik_aktif", v).apply()
     }
 
-    /** Volume musik latar 0-100 (suara vokal selalu 100%). Default 30. */
+    /** Volume musik 0-100. Vokal rekaman selalu 100%. Default 30. */
     fun musikVol(c: Context): Int = p(c).getInt("musik_vol", 30)
 
     fun simpanMusikVol(c: Context, v: Int) {
         p(c).edit().putInt("musik_vol", v.coerceIn(0, 100)).apply()
     }
 
-    fun simpanRekamanTerakhir(c: Context, path: String?) {
-        val e = p(c).edit()
-        if (path == null) e.remove("rekaman_terakhir") else e.putString("rekaman_terakhir", path)
-        e.apply()
+    fun musikIndex(c: Context): Int = p(c).getInt("musik_index", 0)
+
+    fun simpanMusikIndex(c: Context, i: Int) {
+        p(c).edit().putInt("musik_index", i).apply()
+    }
+
+    fun playlistJson(c: Context): String = p(c).getString("playlist", "[]") ?: "[]"
+
+    fun simpanPlaylistJson(c: Context, s: String) {
+        p(c).edit().putString("playlist", s).apply()
     }
 }

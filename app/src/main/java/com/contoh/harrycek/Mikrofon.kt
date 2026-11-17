@@ -21,7 +21,7 @@ import kotlin.math.sqrt
 
 /**
  * Mikrofon: dengar langsung (monitor) dan/atau rekam ke WAV.
- * Sumber: mic HP (bawaan) atau mic headset Bluetooth (SCO).
+ * Musik latar dicampur dengan volume lebih kecil dari vokal. Kendali musik bisa diubah saat berjalan.
  */
 class Mikrofon(private val ctx: Context) {
 
@@ -32,17 +32,29 @@ class Mikrofon(private val ctx: Context) {
     private var jalan = false
     private var worker: Thread? = null
 
+    /** Lagu latar yang diminta ganti saat sedang berjalan. */
+    @Volatile
+    var musikGanti: Uri? = null
+
+    /** true = musik latar sedang diputar (ikut dicampur). */
+    @Volatile
+    var musikPutar: Boolean = false
+
+    /** Volume musik relatif terhadap vokal (0.0 - 1.0). */
+    @Volatile
+    var volMusikLive: Float = 0.3f
+
     var onLevel: ((Int) -> Unit)? = null
     var onSelesai: ((File?) -> Unit)? = null
     var onError: ((String) -> Unit)? = null
 
     fun sedangJalan(): Boolean = jalan
 
-    fun mulai(monitor: Boolean, rekam: Boolean, berkas: File?, musikUri: Uri? = null, volMusik: Float = 0.3f) {
+    fun mulai(monitor: Boolean, rekam: Boolean, berkas: File?, musikUri: Uri?) {
         if (jalan) return
         jalan = true
         val bt = Pengaturan.micBluetooth(ctx)
-        worker = Thread { jalankan(monitor, rekam, berkas, bt, musikUri, volMusik) }.apply {
+        worker = Thread { jalankan(monitor, rekam, berkas, bt, musikUri) }.apply {
             name = "mikrofon"
             start()
         }
@@ -52,19 +64,18 @@ class Mikrofon(private val ctx: Context) {
         jalan = false
     }
 
-    private fun jalankan(monitor: Boolean, rekam: Boolean, berkas: File?, bt: Boolean, musikUri: Uri?, volMusik: Float) {
+    private fun jalankan(monitor: Boolean, rekam: Boolean, berkas: File?, bt: Boolean, musikUri: Uri?) {
         val rate = if (bt) 16000 else 44100
         var rec: AudioRecord? = null
         var track: AudioTrack? = null
         var raf: RandomAccessFile? = null
         var hasil: File? = null
+        var musik: ShortArray? = null
         try {
             if (bt) {
                 aktifkanBluetooth()
-                Thread.sleep(1200L) // beri waktu sambungan SCO siap
+                Thread.sleep(1200L)
             }
-            // Musik latar dibaca dulu, disesuaikan dengan sample rate mic
-            var musik: ShortArray? = null
             if (musikUri != null) {
                 try {
                     musik = MusikLatar.decode(ctx, musikUri, rate)
@@ -85,11 +96,12 @@ class Mikrofon(private val ctx: Context) {
                 if (input != null) r.setPreferredDevice(input)
             }
             val buf = ShortArray(bufBytes / 2)
+            val mix = ShortArray(buf.size)
 
             if (monitor) {
                 val outMin = AudioTrack.getMinBufferSize(rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
                 val usage = if (bt) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA
-                track = AudioTrack.Builder()
+                val tr = AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
                             .setUsage(usage)
@@ -106,7 +118,8 @@ class Mikrofon(private val ctx: Context) {
                     .setBufferSizeInBytes(max(outMin, 4096) * 2)
                     .setTransferMode(AudioTrack.MODE_STREAM)
                     .build()
-                track.play()
+                track = tr
+                tr.play()
             }
 
             if (rekam && berkas != null) {
@@ -120,22 +133,36 @@ class Mikrofon(private val ctx: Context) {
             }
 
             var posMusik = 0
-            val mix = ShortArray(buf.size)
             r.startRecording()
             while (jalan) {
+                val ganti = musikGanti
+                if (ganti != null) {
+                    musikGanti = null
+                    musik = try {
+                        MusikLatar.decode(ctx, ganti, rate)
+                    } catch (e: Exception) {
+                        handler.post { onError?.invoke("Lagu tidak bisa dibaca") }
+                        null
+                    }
+                    posMusik = 0
+                }
+
                 val n = r.read(buf, 0, buf.size)
                 if (n <= 0) continue
-                // Vokal tetap 100%, musik latar diturunkan volumenya agar vokal jelas
+
+                // Vokal tetap 100%; musik latar diturunkan agar vokal jelas
                 var out: ShortArray = buf
                 val mus = musik
-                if (mus != null && mus.isNotEmpty()) {
+                if (mus != null && mus.isNotEmpty() && musikPutar) {
+                    val g = volMusikLive
                     for (i in 0 until n) {
-                        val v = buf[i] + mus[posMusik] * volMusik
+                        val v = buf[i] + mus[posMusik] * g
                         mix[i] = v.toInt().coerceIn(-32768, 32767).toShort()
                         posMusik = (posMusik + 1) % mus.size
                     }
                     out = mix
                 }
+
                 track?.write(out, 0, n)
                 val fs = raf
                 if (fs != null) {
@@ -165,7 +192,6 @@ class Mikrofon(private val ctx: Context) {
                 } catch (e: Exception) { }
                 try { fs.close() } catch (e: Exception) { }
             }
-            // Rekaman kosong (tanpa data) dibuang
             val h = hasil
             if (h != null && h.length() <= 44L) {
                 h.delete()
